@@ -47,7 +47,7 @@ sealed abstract class ContT[M[_], A, +B] extends Serializable {
   }
 }
 
-object ContT {
+object ContT extends ContTInstances {
 
   // Note, we only have two instances of ContT in order to be gentle on the JVM JIT
   // which treats classes with more than two subclasses differently
@@ -140,19 +140,52 @@ object ContT {
       def defer[A](c: => ContT[M, B, A]): ContT[M, B, A] =
         DeferCont(() => c)
     }
+}
 
-  implicit def catsDataContTMonad[M[_]: Defer, A]: Monad[ContT[M, A, *]] =
-    new Monad[ContT[M, A, *]] {
-      def pure[B](b: B): ContT[M, A, B] =
-        ContT.pure(b)
+sealed abstract private[data] class ContTInstances extends ContTInstances1 {
+  implicit def catsDataContTMonad[F[_], A](implicit F0: Defer[F]): Monad[ContT[F, A, *]] =
+    new ContTMonad[F, A] { implicit val defer: Defer[F] = F0 }
+}
 
-      override def map[B, C](c: ContT[M, A, B])(fn: B => C): ContT[M, A, C] =
-        c.map(fn)
+sealed abstract private[data] class ContTInstances1 {
+  implicit def catsDataContTMonadError[F[_], A, E](implicit defer0: Defer[F], F0: MonadError[F, E]): MonadError[ContT[F, A, *], E] =
+    new ContTMonadError[F, A, E] {
+      implicit val defer: Defer[F] = defer0
+      implicit val F: MonadError[F, E] = F0
+    }
+}
 
-      def flatMap[B, C](c: ContT[M, A, B])(fn: B => ContT[M, A, C]): ContT[M, A, C] =
-        c.flatMap(fn)
+private trait ContTMonad[M[_], A] extends Monad[ContT[M, A, *]] {
+  implicit def defer: Defer[M]
 
-      def tailRecM[B, C](b: B)(fn: B => ContT[M, A, Either[B, C]]): ContT[M, A, C] =
-        ContT.tailRecM(b)(fn)
+  def pure[B](b: B): ContT[M, A, B] =
+    ContT.pure(b)
+
+  override def map[B, C](c: ContT[M, A, B])(fn: B => C): ContT[M, A, C] =
+    c.map(fn)
+
+  def flatMap[B, C](c: ContT[M, A, B])(fn: B => ContT[M, A, C]): ContT[M, A, C] =
+    c.flatMap(fn)
+
+  def tailRecM[B, C](b: B)(fn: B => ContT[M, A, Either[B, C]]): ContT[M, A, C] =
+    ContT.tailRecM(b)(fn)
+}
+
+private trait ContTMonadError[F[_], A, E] extends MonadError[ContT[F, A, *], E] with ContTMonad[F, A] {
+  implicit def F: MonadError[F, E]
+
+  def raiseError[B](e: E): ContT[F, A, B] =
+    ContT(_ => F.raiseError(e))
+
+  def handleErrorWith[B](fa: ContT[F, A, B])(f: E => ContT[F, A, B]): ContT[F, A, B] =
+    ContT { continue =>
+      F.handleErrorWith(fa.run(continue)){ e =>
+        f(e).run(continue)
+      }
+    }
+
+  override def adaptError[B](fa: ContT[F, A, B])(pf: PartialFunction[E, E]): ContT[F, A, B] =
+    ContT { continue =>
+      F.adaptError(fa.run(continue))(pf)
     }
 }
